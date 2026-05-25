@@ -36,7 +36,7 @@ def get_stock_data() -> dict:
             cursor.execute(
                 f"SELECT RTRIM(codi), RTRIM(codf), RTRIM(descr), "
                 f"RTRIM(marc), stoc, RTRIM(umed), vvus "
-                f"FROM {tabla} WITH(NOLOCK) WHERE stoc > 0 AND LEFT(codi, 2) = '02'"
+                f"FROM {tabla} WITH(NOLOCK) WHERE LEFT(codi, 2) = '02'"
             )
             for row in cursor.fetchall():
                 codi = row[0]
