@@ -35,8 +35,8 @@ def get_stock_data() -> dict:
         for tabla, nombre in almacenes.items():
             cursor.execute(
                 f"SELECT RTRIM(codi), RTRIM(codf), RTRIM(descr), "
-                f"RTRIM(marc), stoc, RTRIM(umed) "
-                f"FROM {tabla} WHERE stoc > 0"
+                f"RTRIM(marc), stoc, RTRIM(umed), vvus "
+                f"FROM {tabla} WITH(NOLOCK) WHERE stoc > 0 AND LEFT(codi, 2) = '02'"
             )
             for row in cursor.fetchall():
                 codi = row[0]
@@ -46,6 +46,7 @@ def get_stock_data() -> dict:
                         "descr": row[2],
                         "marc": row[3],
                         "umed": row[5],
+                        "precio": float(row[6]) if row[6] is not None else 0.0,
                         "almacenes": {},
                     }
                 stock[codi]["almacenes"][nombre] = float(row[4])
