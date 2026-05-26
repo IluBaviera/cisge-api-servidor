@@ -1,7 +1,9 @@
 import os
 import datetime
 import pyodbc
+from typing import List
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 app = FastAPI(title="CISGE Stock API")
 
@@ -153,3 +155,134 @@ def rollos(producto: str):
         }
         for row in rows
     ]
+
+
+class IngresoRequest(BaseModel):
+    referencia: str
+    almacen_id: int
+    codf: str
+    marca: str
+    usuario: str
+    rollos: List[float]
+
+
+@app.post("/rollos/ingresos")
+def crear_ingreso(body: IngresoRequest):
+    conn_r = connect_rollos()
+    conn_r.autocommit = False
+    try:
+        cursor_r = conn_r.cursor()
+
+        # 1. Buscar o crear producto en BdRollos
+        cursor_r.execute(
+            "SELECT producto_id FROM Producto WITH(UPDLOCK) WHERE codf = ? AND marca = ?",
+            body.codf, body.marca,
+        )
+        row = cursor_r.fetchone()
+
+        if row:
+            producto_id = row[0]
+        else:
+            producto_nava = None
+            conn_n = connect_nava()
+            try:
+                cursor_n = conn_n.cursor()
+                for tabla in ["prd0101", "prd0108", "prd0112", "prd0118"]:
+                    cursor_n.execute(
+                        f"SELECT RTRIM(codi), RTRIM(descr), RTRIM(umed) "
+                        f"FROM {tabla} WITH(NOLOCK) "
+                        f"WHERE RTRIM(codf) = ? AND RTRIM(marc) = ?",
+                        body.codf, body.marca,
+                    )
+                    nava_row = cursor_n.fetchone()
+                    if nava_row:
+                        producto_nava = nava_row
+                        break
+            finally:
+                conn_n.close()
+
+            if not producto_nava:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Producto '{body.codf}' marca '{body.marca}' no encontrado en el ERP",
+                )
+
+            cursor_r.execute(
+                "INSERT INTO Producto (codf, codi, marca, descripcion, unidad) "
+                "OUTPUT INSERTED.producto_id VALUES (?, ?, ?, ?, ?)",
+                body.codf, producto_nava[0], body.marca, producto_nava[1], producto_nava[2],
+            )
+            producto_id = cursor_r.fetchone()[0]
+
+        # 2. Crear registro de ingreso
+        cursor_r.execute(
+            "INSERT INTO Ingreso (referencia, almacen_id, usuario, fecha) "
+            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?)",
+            body.referencia, body.almacen_id, body.usuario, datetime.datetime.now(),
+        )
+        ingreso_id = cursor_r.fetchone()[0]
+
+        # 3. Obtener codigo del almacen
+        cursor_r.execute(
+            "SELECT codigo FROM Almacen WITH(NOLOCK) WHERE id = ?",
+            body.almacen_id,
+        )
+        almacen_row = cursor_r.fetchone()
+        if not almacen_row:
+            raise HTTPException(status_code=404, detail=f"Almacen {body.almacen_id} no encontrado")
+        codigo_almacen = almacen_row[0]
+
+        fecha_str = datetime.datetime.now().strftime("%y%m%d")
+
+        # 4. Leer y bloquear correlativo dedicado — nunca baja aunque se borren rollos
+        cursor_r.execute(
+            "SELECT ultimo_numero FROM Correlativo WITH(UPDLOCK, HOLDLOCK) WHERE almacen_id = ?",
+            body.almacen_id,
+        )
+        corr_row = cursor_r.fetchone()
+        if corr_row:
+            base_count = corr_row[0]
+        else:
+            cursor_r.execute(
+                "INSERT INTO Correlativo (almacen_id, ultimo_numero) VALUES (?, 0)",
+                body.almacen_id,
+            )
+            base_count = 0
+
+        # 5. Insertar rollos y movimientos
+        ids_rollo = []
+        for i, metros in enumerate(body.rollos):
+            id_rollo = f"R-{codigo_almacen}-{fecha_str}-{base_count + i + 1:04d}"
+            cursor_r.execute(
+                "INSERT INTO Rollo (id_rollo, producto_id, almacen_id, ingreso_id, metros_inicial, estado) "
+                "VALUES (?, ?, ?, ?, ?, 'disponible')",
+                id_rollo, producto_id, body.almacen_id, ingreso_id, metros,
+            )
+            cursor_r.execute(
+                "INSERT INTO Movimiento (id_rollo, tipo, metros) VALUES (?, 'ingreso', ?)",
+                id_rollo, metros,
+            )
+            ids_rollo.append(id_rollo)
+
+        # 6. Actualizar correlativo al ultimo numero usado
+        cursor_r.execute(
+            "UPDATE Correlativo SET ultimo_numero = ? WHERE almacen_id = ?",
+            base_count + len(body.rollos), body.almacen_id,
+        )
+
+        conn_r.commit()
+
+    except HTTPException:
+        conn_r.rollback()
+        raise
+    except Exception as e:
+        conn_r.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al registrar ingreso: {e}")
+    finally:
+        conn_r.close()
+
+    return {
+        "ingreso_id": ingreso_id,
+        "producto_id": producto_id,
+        "ids_rollo": ids_rollo,
+    }
