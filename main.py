@@ -91,7 +91,7 @@ def rollos_resumen(producto: str):
         cursor = conn.cursor()
         cursor.execute(
             "SELECT COUNT(r.id_rollo), "
-            "  ISNULL(SUM(r.metros_inicial + ISNULL(sub.metros_mov, 0)), 0) "
+            "  ISNULL(SUM(ISNULL(sub.metros_mov, 0)), 0) "
             "FROM Rollo r WITH(NOLOCK) "
             "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
             "LEFT JOIN ("
@@ -126,7 +126,7 @@ def rollos(producto: str):
         cursor.execute(
             "SELECT r.id_rollo, a.nombre, r.ubicacion, r.estado, "
             "  r.metros_inicial, "
-            "  r.metros_inicial + ISNULL(SUM(m.metros), 0) AS metros_actuales "
+            "  ISNULL(SUM(m.metros), 0) AS metros_actuales "
             "FROM Rollo r WITH(NOLOCK) "
             "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
             "JOIN Almacen a WITH(NOLOCK) ON a.id = r.almacen_id "
