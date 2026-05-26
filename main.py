@@ -29,7 +29,7 @@ def get_stock_data() -> dict:
         "prd0118": "Almacen San Luis 2",
     }
 
-    stock = {}
+    products = {}  # clave: (codf, marc)
     try:
         cursor = conn.cursor()
         for tabla, nombre in almacenes.items():
@@ -39,24 +39,27 @@ def get_stock_data() -> dict:
                 f"FROM {tabla} WITH(NOLOCK) WHERE LEFT(codi, 2) = '02'"
             )
             for row in cursor.fetchall():
-                codi = row[0]
-                if codi not in stock:
-                    stock[codi] = {
-                        "codf": row[1],
-                        "descr": row[2],
-                        "marc": row[3],
-                        "umed": row[5],
+                key = (row[1], row[3])  # (codf, marc)
+                if key not in products:
+                    products[key] = {
+                        "codigo": row[1],
+                        "codigo_interno": row[0],
+                        "descripcion": row[2],
+                        "marca": row[3],
                         "precio": float(row[6]) if row[6] is not None else 0.0,
+                        "unidad": row[5],
                         "almacenes": {},
                     }
-                stock[codi]["almacenes"][nombre] = float(row[4])
+                products[key]["almacenes"][nombre] = float(row[4])
     finally:
         conn.close()
 
+    productos = list(products.values())
+
     return {
         "actualizado": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "total_productos": len(stock),
-        "stock": stock,
+        "total_productos": len(productos),
+        "productos": productos,
     }
 
 
