@@ -166,6 +166,13 @@ class IngresoRequest(BaseModel):
     rollos: List[float]
 
 
+class MovimientoRequest(BaseModel):
+    id_rollo: str
+    metros: float
+    pedido_erp: str
+    usuario: str
+
+
 @app.post("/rollos/ingresos")
 def crear_ingreso(body: IngresoRequest):
     conn_r = connect_rollos()
@@ -285,4 +292,83 @@ def crear_ingreso(body: IngresoRequest):
         "ingreso_id": ingreso_id,
         "producto_id": producto_id,
         "ids_rollo": ids_rollo,
+    }
+
+
+@app.post("/rollos/movimientos")
+def registrar_corte(body: MovimientoRequest):
+    conn_r = connect_rollos()
+    conn_r.autocommit = False
+    try:
+        cursor_r = conn_r.cursor()
+
+        # 1. Verificar y bloquear rollo — serializa cortes concurrentes sobre el mismo rollo
+        cursor_r.execute(
+            "SELECT estado FROM Rollo WITH(UPDLOCK, HOLDLOCK) WHERE id_rollo = ?",
+            body.id_rollo,
+        )
+        rollo_row = cursor_r.fetchone()
+        if not rollo_row:
+            raise HTTPException(status_code=404, detail=f"Rollo '{body.id_rollo}' no encontrado")
+        estado_actual = rollo_row[0]
+
+        # 2. Calcular metros disponibles — serializado por el lock del paso 1
+        cursor_r.execute(
+            "SELECT ISNULL(SUM(metros), 0) FROM Movimiento WHERE id_rollo = ?",
+            body.id_rollo,
+        )
+        disponibles = float(cursor_r.fetchone()[0])
+
+        # 3. Validar stock suficiente
+        if body.metros > disponibles:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Metros a cortar ({body.metros}) superan los disponibles ({disponibles:.3f})",
+            )
+
+        # 4. Registrar corte como movimiento negativo
+        cursor_r.execute(
+            "INSERT INTO Movimiento (id_rollo, tipo, metros, pedido_erp, usuario, fecha) "
+            "VALUES (?, 'corte', ?, ?, ?, ?)",
+            body.id_rollo, -body.metros, body.pedido_erp, body.usuario, datetime.datetime.now(),
+        )
+
+        # 5. Determinar nuevo estado
+        restante = disponibles - body.metros
+
+        cursor_r.execute(
+            "SELECT valor FROM Config WITH(NOLOCK) WHERE clave = 'umbral_retazo'",
+        )
+        config_row = cursor_r.fetchone()
+        umbral = float(config_row[0]) if config_row else 0.0
+
+        if restante < 0.001:
+            nuevo_estado = "agotado"
+        elif restante < umbral:
+            nuevo_estado = "retazo"
+        else:
+            nuevo_estado = "disponible"
+
+        if nuevo_estado != estado_actual:
+            cursor_r.execute(
+                "UPDATE Rollo SET estado = ? WHERE id_rollo = ?",
+                nuevo_estado, body.id_rollo,
+            )
+
+        conn_r.commit()
+
+    except HTTPException:
+        conn_r.rollback()
+        raise
+    except Exception as e:
+        conn_r.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al registrar corte: {e}")
+    finally:
+        conn_r.close()
+
+    return {
+        "id_rollo": body.id_rollo,
+        "metros_cortados": body.metros,
+        "metros_restantes": round(restante, 3),
+        "nuevo_estado": nuevo_estado,
     }
