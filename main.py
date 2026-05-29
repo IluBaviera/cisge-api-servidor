@@ -47,9 +47,15 @@ def get_stock_data() -> dict:
         cursor = conn.cursor()
         for tabla, nombre in almacenes.items():
             cursor.execute(
-                f"SELECT RTRIM(codi), RTRIM(codf), RTRIM(descr), "
-                f"RTRIM(marc), stoc, RTRIM(umed), vvus "
-                f"FROM {tabla} WITH(NOLOCK) WHERE LEFT(codi, 2) = '02' AND estado = 1"
+                f"SELECT RTRIM(prd.codi), RTRIM(prd.codf), RTRIM(prd.descr), "
+                f"RTRIM(prd.marc), prd.stoc, RTRIM(prd.umed), prd.vvus, "
+                f"RTRIM(sbf.nomsub), RTRIM(grp.nomgru) "
+                f"FROM {tabla} prd WITH(NOLOCK) "
+                f"INNER JOIN tbl01sbf sbf WITH(NOLOCK) "
+                f"  ON LEFT(prd.codi, 4) = LEFT(sbf.codsub, 2) + SUBSTRING(sbf.codsub, 4, 2) "
+                f"INNER JOIN tbl01grp grp WITH(NOLOCK) "
+                f"  ON LEFT(prd.codi, 7) = LEFT(grp.codgru, 2) + SUBSTRING(grp.codgru, 4, 2) + '-' + SUBSTRING(grp.codgru, 7, 2) "
+                f"WHERE LEFT(prd.codi, 2) = '02' AND prd.estado = 1"
             )
             for row in cursor.fetchall():
                 key = (row[1], row[3])
@@ -61,6 +67,8 @@ def get_stock_data() -> dict:
                         "marca": row[3],
                         "precio": float(row[6]) if row[6] is not None else 0.0,
                         "unidad": row[5],
+                        "subfamilia": row[7],
+                        "grupo": row[8],
                         "almacenes": {},
                     }
                 products[key]["almacenes"][nombre] = float(row[4])
