@@ -181,6 +181,18 @@ class MovimientoRequest(BaseModel):
     usuario: str
 
 
+class TrasladoRequest(BaseModel):
+    id_rollo: str
+    almacen_destino_id: int
+    usuario: str
+
+
+class ConfigRequest(BaseModel):
+    clave: str
+    valor: str
+    usuario: str
+
+
 @app.post("/rollos/ingresos")
 def crear_ingreso(body: IngresoRequest):
     conn_r = connect_rollos()
@@ -380,3 +392,314 @@ def registrar_corte(body: MovimientoRequest):
         "metros_restantes": round(restante, 3),
         "nuevo_estado": nuevo_estado,
     }
+
+
+@app.post("/rollos/traslados")
+def trasladar_rollo(body: TrasladoRequest):
+    conn = connect_rollos()
+    conn.autocommit = False
+    try:
+        cursor = conn.cursor()
+
+        # 1. Verificar rollo y obtener almacén origen
+        cursor.execute(
+            "SELECT r.estado, r.almacen_id, a.nombre "
+            "FROM Rollo r WITH(UPDLOCK, HOLDLOCK) "
+            "JOIN Almacen a WITH(NOLOCK) ON a.id = r.almacen_id "
+            "WHERE r.id_rollo = ?",
+            body.id_rollo,
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Rollo '{body.id_rollo}' no encontrado")
+        if row[0] == "agotado":
+            raise HTTPException(status_code=400, detail="No se puede trasladar un rollo agotado")
+        almacen_origen_id = row[1]
+        almacen_origen_nombre = row[2]
+
+        # 2. Verificar almacén destino
+        cursor.execute(
+            "SELECT nombre FROM Almacen WITH(NOLOCK) WHERE id = ?",
+            body.almacen_destino_id,
+        )
+        dest_row = cursor.fetchone()
+        if not dest_row:
+            raise HTTPException(status_code=404, detail=f"Almacén destino {body.almacen_destino_id} no encontrado")
+        almacen_destino_nombre = dest_row[0]
+
+        if almacen_origen_id == body.almacen_destino_id:
+            raise HTTPException(status_code=400, detail="El almacén destino es igual al origen")
+
+        # 3. Actualizar almacén del rollo
+        cursor.execute(
+            "UPDATE Rollo SET almacen_id = ? WHERE id_rollo = ?",
+            body.almacen_destino_id, body.id_rollo,
+        )
+
+        # 4. Registrar movimiento de traslado
+        cursor.execute(
+            "INSERT INTO Movimiento (id_rollo, tipo, metros, usuario, fecha) "
+            "VALUES (?, 'traslado', 0, ?, ?)",
+            body.id_rollo, body.usuario, datetime.datetime.now(),
+        )
+
+        conn.commit()
+
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al registrar traslado: {e}")
+    finally:
+        conn.close()
+
+    return {
+        "id_rollo": body.id_rollo,
+        "almacen_origen": almacen_origen_nombre,
+        "almacen_destino": almacen_destino_nombre,
+        "usuario": body.usuario,
+    }
+
+
+@app.get("/rollos/sugerencia")
+def sugerir_rollo(producto: str, metros: float, almacen_id: int):
+    conn = connect_rollos()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT r.id_rollo, a.nombre, r.ubicacion, r.estado, "
+            "  r.metros_inicial, ISNULL(SUM(m.metros), 0) AS metros_actuales "
+            "FROM Rollo r WITH(NOLOCK) "
+            "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
+            "JOIN Almacen a WITH(NOLOCK) ON a.id = r.almacen_id "
+            "LEFT JOIN Movimiento m WITH(NOLOCK) ON m.id_rollo = r.id_rollo "
+            "WHERE p.codf = ? AND r.almacen_id = ? "
+            "  AND r.estado IN ('disponible', 'retazo') "
+            "GROUP BY r.id_rollo, a.nombre, r.ubicacion, r.estado, r.metros_inicial",
+            producto, almacen_id,
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No hay rollos disponibles para '{producto}'")
+
+    rollos = [
+        {
+            "id_rollo": r[0],
+            "almacen": r[1],
+            "ubicacion": r[2],
+            "estado": r[3],
+            "metros_inicial": float(r[4]),
+            "metros_actuales": float(r[5]),
+        }
+        for r in rows
+    ]
+
+    cubren = [r for r in rollos if r["metros_actuales"] >= metros]
+    no_cubren = [r for r in rollos if r["metros_actuales"] < metros]
+
+    if cubren:
+        sugerido = min(cubren, key=lambda r: r["metros_actuales"])
+    else:
+        sugerido = max(no_cubren, key=lambda r: r["metros_actuales"])
+
+    return {
+        "sugerido": sugerido,
+        "todos": sorted(rollos, key=lambda r: r["metros_actuales"], reverse=True),
+    }
+
+
+@app.get("/rollos/documentos")
+def documentos(almacen_id: int, fecha: str = None):
+    if fecha is None:
+        fecha = datetime.date.today().isoformat()
+
+    conn_r = connect_rollos()
+    try:
+        cursor = conn_r.cursor()
+        cursor.execute(
+            "SELECT codigo FROM Almacen WITH(NOLOCK) WHERE id = ?",
+            almacen_id,
+        )
+        alm_row = cursor.fetchone()
+        if not alm_row:
+            raise HTTPException(status_code=404, detail=f"Almacén {almacen_id} no encontrado")
+        codalm = alm_row[0]
+    finally:
+        conn_r.close()
+
+    conn_n = connect_nava()
+    try:
+        cursor = conn_n.cursor()
+
+        cursor.execute(
+            "SELECT DISTINCT m.ndocu, m.fecha, m.codcli, m.nomcli, m.codven, "
+            "  d.codf, d.descr, d.cant, d.umed "
+            "FROM mst01cot m WITH(NOLOCK) "
+            "JOIN dtl01cot d WITH(NOLOCK) ON d.cdocu = m.cdocu AND d.ndocu = m.ndocu "
+            "WHERE m.flag = '0' "
+            "  AND LEFT(d.codi, 2) = '02' "
+            "  AND CAST(m.fecha AS DATE) = ? "
+            "ORDER BY m.fecha DESC",
+            fecha,
+        )
+        cot_rows = cursor.fetchall()
+
+        cursor.execute(
+            "SELECT DISTINCT m.ndocu, m.fecha, m.codcli, m.nomcli, m.codven, "
+            "  d.codf, d.descr, d.pedi, d.cant, d.umed "
+            "FROM mst01ped m WITH(NOLOCK) "
+            "JOIN dtl01ped d WITH(NOLOCK) ON d.cdocu = m.cdocu AND d.ndocu = m.ndocu "
+            "WHERE m.flag = '0' "
+            "  AND LEFT(d.codi, 2) = '02' "
+            "  AND d.codalm = ? "
+            "  AND CAST(m.fecha AS DATE) = ? "
+            "ORDER BY m.fecha DESC",
+            codalm, fecha,
+        )
+        ped_rows = cursor.fetchall()
+
+    finally:
+        conn_n.close()
+
+    cotizaciones = [
+        {
+            "tipo": "cotizacion",
+            "ndocu": r[0],
+            "fecha": str(r[1]),
+            "codcli": r[2],
+            "nomcli": r[3].strip(),
+            "codven": r[4],
+            "codf": r[5].strip(),
+            "descr": r[6].strip(),
+            "cant": float(r[7]),
+            "umed": r[8].strip(),
+        }
+        for r in cot_rows
+    ]
+
+    pedidos = [
+        {
+            "tipo": "pedido",
+            "ndocu": r[0],
+            "fecha": str(r[1]),
+            "codcli": r[2],
+            "nomcli": r[3].strip(),
+            "codven": r[4],
+            "codf": r[5].strip(),
+            "descr": r[6].strip(),
+            "cant_pedida": float(r[7]),
+            "cant_despachada": float(r[8]),
+            "umed": r[9].strip(),
+        }
+        for r in ped_rows
+    ]
+
+    return {
+        "fecha": fecha,
+        "almacen_id": almacen_id,
+        "cotizaciones": cotizaciones,
+        "pedidos": pedidos,
+    }
+
+
+@app.get("/rollos/descuadre")
+def descuadre(almacen_id: int):
+    conn_r = connect_rollos()
+    try:
+        cursor = conn_r.cursor()
+        cursor.execute(
+            "SELECT tabla_erp, codigo FROM Almacen WITH(NOLOCK) WHERE id = ?",
+            almacen_id,
+        )
+        alm_row = cursor.fetchone()
+        if not alm_row:
+            raise HTTPException(status_code=404, detail=f"Almacén {almacen_id} no encontrado")
+        tabla_erp = alm_row[0]
+        if not tabla_erp:
+            raise HTTPException(status_code=400, detail=f"Almacén {almacen_id} sin tabla ERP configurada")
+
+        cursor.execute(
+            "SELECT p.codf, ISNULL(SUM(m.metros), 0) AS metros_actuales "
+            "FROM Rollo r WITH(NOLOCK) "
+            "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
+            "LEFT JOIN Movimiento m WITH(NOLOCK) ON m.id_rollo = r.id_rollo "
+            "WHERE r.almacen_id = ? AND r.estado IN ('disponible', 'retazo') "
+            "GROUP BY p.codf",
+            almacen_id,
+        )
+        stock_rollos = {row[0].strip(): float(row[1]) for row in cursor.fetchall()}
+    finally:
+        conn_r.close()
+
+    conn_n = connect_nava()
+    try:
+        cursor = conn_n.cursor()
+        cursor.execute(
+            f"SELECT RTRIM(codf), stoc "
+            f"FROM {tabla_erp} WITH(NOLOCK) "
+            f"WHERE LEFT(codi, 2) = '02' AND estado = 1 AND stoc != 0"
+        )
+        stock_erp = {row[0]: float(row[1]) for row in cursor.fetchall()}
+    finally:
+        conn_n.close()
+
+    todos_productos = set(stock_erp.keys()) | set(stock_rollos.keys())
+    diferencias = []
+    for codf in sorted(todos_productos):
+        erp = stock_erp.get(codf, 0.0)
+        rollos = stock_rollos.get(codf, 0.0)
+        diff = round(erp - rollos, 3)
+        if abs(diff) > 0.001:
+            diferencias.append({
+                "codf": codf,
+                "stock_erp": erp,
+                "stock_rollos": rollos,
+                "diferencia": diff,
+            })
+
+    return {
+        "almacen_id": almacen_id,
+        "tabla_erp": tabla_erp,
+        "productos_cuadrados": len(todos_productos) - len(diferencias),
+        "productos_descuadrados": len(diferencias),
+        "detalle": diferencias,
+    }
+
+
+@app.get("/config")
+def get_config():
+    conn = connect_rollos()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT clave, valor FROM Config WITH(NOLOCK)")
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+    return {row[0]: row[1] for row in rows}
+
+
+@app.put("/config")
+def put_config(body: ConfigRequest):
+    conn = connect_rollos()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE Config SET valor = ? WHERE clave = ?",
+            body.valor, body.clave,
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Clave '{body.clave}' no existe")
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al actualizar config: {e}")
+    finally:
+        conn.close()
+
+    return {"clave": body.clave, "valor": body.valor, "usuario": body.usuario}
