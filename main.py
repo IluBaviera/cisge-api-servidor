@@ -622,6 +622,7 @@ def descuadre(almacen_id: int):
         if not tabla_erp:
             raise HTTPException(status_code=400, detail=f"Almacén {almacen_id} sin tabla ERP configurada")
 
+        # Solo productos con rollos activos en este almacén
         cursor.execute(
             "SELECT p.codf, ISNULL(SUM(m.metros), 0) AS metros_actuales "
             "FROM Rollo r WITH(NOLOCK) "
@@ -638,20 +639,27 @@ def descuadre(almacen_id: int):
     conn_n = connect_nava()
     try:
         cursor = conn_n.cursor()
+        # Solo mangueras del ERP (subfamilia contiene 'MANGUERA')
         cursor.execute(
-            f"SELECT RTRIM(codf), stoc "
-            f"FROM {tabla_erp} WITH(NOLOCK) "
-            f"WHERE LEFT(codi, 2) = '02' AND estado = 1 AND stoc != 0"
+            f"SELECT RTRIM(prd.codf), prd.stoc "
+            f"FROM {tabla_erp} prd WITH(NOLOCK) "
+            f"INNER JOIN tbl01sbf sbf WITH(NOLOCK) "
+            f"  ON LEFT(prd.codi, 4) = LEFT(sbf.codsub, 2) + SUBSTRING(sbf.codsub, 4, 2) "
+            f"WHERE LEFT(prd.codi, 2) = '02' AND prd.estado = 1 "
+            f"  AND sbf.nomsub LIKE '%MANGUERA%'"
         )
         stock_erp = {row[0]: float(row[1]) for row in cursor.fetchall()}
     finally:
         conn_n.close()
 
+    # FULL OUTER JOIN por codf: productos con rollos activos O mangueras en ERP
     todos_productos = set(stock_erp.keys()) | set(stock_rollos.keys())
     diferencias = []
     for codf in sorted(todos_productos):
         erp = stock_erp.get(codf, 0.0)
         rollos = stock_rollos.get(codf, 0.0)
+        if erp == 0.0 and rollos == 0.0:
+            continue
         diff = round(erp - rollos, 3)
         if abs(diff) > 0.001:
             diferencias.append({
