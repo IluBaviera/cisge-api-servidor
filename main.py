@@ -552,8 +552,7 @@ def documentos(almacen_id: int, fecha: str = None):
             "  d.codf, d.descr, d.cant, d.umed, m.fecreg, m.flag "
             "FROM mst01cot m WITH(NOLOCK) "
             "JOIN dtl01cot d WITH(NOLOCK) ON d.cdocu = m.cdocu AND d.ndocu = m.ndocu "
-            "WHERE m.flag = '0' "
-            "  AND LEFT(d.codi, 2) = '02' "
+            "WHERE LEFT(d.codi, 2) = '02' "
             "  AND CAST(m.fecha AS DATE) = ? "
             "ORDER BY m.fecreg DESC",
             fecha,
