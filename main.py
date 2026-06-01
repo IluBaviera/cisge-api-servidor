@@ -549,13 +549,13 @@ def documentos(almacen_id: int, fecha: str = None):
 
         cursor.execute(
             "SELECT DISTINCT m.ndocu, m.fecha, m.codcli, m.nomcli, m.codven, "
-            "  d.codf, d.descr, d.cant, d.umed "
+            "  d.codf, d.descr, d.cant, d.umed, m.fecreg "
             "FROM mst01cot m WITH(NOLOCK) "
             "JOIN dtl01cot d WITH(NOLOCK) ON d.cdocu = m.cdocu AND d.ndocu = m.ndocu "
             "WHERE m.flag = '0' "
             "  AND LEFT(d.codi, 2) = '02' "
             "  AND CAST(m.fecha AS DATE) = ? "
-            "ORDER BY m.fecha DESC",
+            "ORDER BY m.fecreg DESC",
             fecha,
         )
         cot_rows = cursor.fetchall()
@@ -589,6 +589,7 @@ def documentos(almacen_id: int, fecha: str = None):
             "descr": r[6].strip(),
             "cant": float(r[7]),
             "umed": r[8].strip(),
+            "fecreg": str(r[9]) if r[9] is not None else None,
         }
         for r in cot_rows
     ]
