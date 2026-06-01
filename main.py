@@ -3,9 +3,21 @@ import datetime
 import pyodbc
 from typing import List
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 app = FastAPI(title="CISGE Stock API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "https://api.comercialcisgesac.com.pe",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _connect(database: str) -> pyodbc.Connection:
