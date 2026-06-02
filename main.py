@@ -106,6 +106,21 @@ def stock():
     return get_stock_data()
 
 
+@app.get("/marcas")
+def marcas():
+    conn = connect_nava()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT Nommar, abrmar FROM tbl01mar WITH(NOLOCK) WHERE viewnube = 1"
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    return [{"nombre": row[0].strip(), "alias": row[1].strip()} for row in rows]
+
+
 @app.get("/rollos/resumen")
 def rollos_resumen(producto: str):
     conn = connect_rollos()
