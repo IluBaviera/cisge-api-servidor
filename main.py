@@ -65,7 +65,7 @@ def get_stock_data() -> dict:
             cursor.execute(
                 f"SELECT RTRIM(prd.codi), RTRIM(prd.codf), RTRIM(prd.descr), "
                 f"RTRIM(prd.marc), prd.stoc, RTRIM(prd.umed), prd.vvus, "
-                f"RTRIM(sbf.nomsub), RTRIM(grp.nomgru) "
+                f"RTRIM(sbf.nomsub), RTRIM(grp.nomgru), prd.pedi "
                 f"FROM {tabla} prd WITH(NOLOCK) "
                 f"INNER JOIN tbl01sbf sbf WITH(NOLOCK) "
                 f"  ON LEFT(prd.codi, 4) = LEFT(sbf.codsub, 2) + SUBSTRING(sbf.codsub, 4, 2) "
@@ -87,7 +87,7 @@ def get_stock_data() -> dict:
                         "grupo": row[8],
                         "almacenes": {},
                     }
-                products[key]["almacenes"][nombre] = float(row[4])
+                products[key]["almacenes"][nombre] = float(row[4]) - float(row[9])
     finally:
         conn.close()
 
