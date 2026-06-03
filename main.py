@@ -44,6 +44,10 @@ def connect_rollos() -> pyodbc.Connection:
     return _connect("BdRollos")
 
 
+def connect_asistente() -> pyodbc.Connection:
+    return _connect("BdAsistente")
+
+
 def get_stock_data() -> dict:
     conn = connect_nava()
 
@@ -745,3 +749,66 @@ def put_config(body: ConfigRequest):
         conn.close()
 
     return {"clave": body.clave, "valor": body.valor, "usuario": body.usuario}
+
+
+class HistorialCargarRequest(BaseModel):
+    numero_wa: str
+
+
+class HistorialGuardarRequest(BaseModel):
+    numero_wa: str
+    user_msg: str
+    assistant_msg: str
+
+
+@app.post("/historial/cargar")
+def historial_cargar(body: HistorialCargarRequest):
+    conn = connect_asistente()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT TOP 10 rol, contenido, timestamp "
+            "FROM Conversacion WITH(NOLOCK) "
+            "WHERE numero_wa = ? "
+            "ORDER BY timestamp DESC",
+            body.numero_wa,
+        )
+        filas = cursor.fetchall()
+    finally:
+        conn.close()
+
+    if not filas:
+        return {"historial": []}
+
+    mas_reciente = filas[0][2]
+    if isinstance(mas_reciente, str):
+        mas_reciente = datetime.datetime.fromisoformat(mas_reciente)
+    if datetime.datetime.utcnow() - mas_reciente > datetime.timedelta(hours=2):
+        return {"historial": []}
+
+    historial = [{"role": r, "content": c} for r, c, _ in reversed(filas)]
+    return {"historial": historial}
+
+
+@app.post("/historial/guardar")
+def historial_guardar(body: HistorialGuardarRequest):
+    conn = connect_asistente()
+    try:
+        cursor = conn.cursor()
+        ahora = datetime.datetime.utcnow()
+        cursor.execute(
+            "INSERT INTO Conversacion (numero_wa, rol, contenido, timestamp) VALUES (?, ?, ?, ?)",
+            body.numero_wa, "user", body.user_msg, ahora,
+        )
+        cursor.execute(
+            "INSERT INTO Conversacion (numero_wa, rol, contenido, timestamp) VALUES (?, ?, ?, ?)",
+            body.numero_wa, "assistant", body.assistant_msg, ahora,
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al guardar historial: {e}")
+    finally:
+        conn.close()
+
+    return {"ok": True}
