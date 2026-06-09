@@ -230,6 +230,7 @@ class IngresoRequest(BaseModel):
     codf: str
     marca: str
     usuario: str
+    ubicacion: Optional[str] = None
     rollos: List[float]
 
 
@@ -340,9 +341,9 @@ def crear_ingreso(body: IngresoRequest):
         for i, metros in enumerate(body.rollos):
             id_rollo = f"R-{codigo_almacen}-{fecha_str}-{base_count + i + 1:04d}"
             cursor_r.execute(
-                "INSERT INTO Rollo (id_rollo, producto_id, almacen_id, ingreso_id, metros_inicial, estado) "
-                "VALUES (?, ?, ?, ?, ?, 'disponible')",
-                id_rollo, producto_id, body.almacen_id, ingreso_id, metros,
+                "INSERT INTO Rollo (id_rollo, producto_id, almacen_id, ingreso_id, metros_inicial, ubicacion, estado) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'disponible')",
+                id_rollo, producto_id, body.almacen_id, ingreso_id, metros, body.ubicacion,
             )
             cursor_r.execute(
                 "INSERT INTO Movimiento (id_rollo, tipo, metros) VALUES (?, 'ingreso', ?)",
