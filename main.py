@@ -1,7 +1,7 @@
 import os
 import datetime
 import pyodbc
-from typing import List
+from typing import List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -168,26 +168,30 @@ def rollos(almacen_id: int, producto: str = None):
             cursor.execute(
                 "SELECT r.id_rollo, a.nombre, r.ubicacion, r.estado, "
                 "  r.metros_inicial, p.codf, p.descripcion, "
+                "  ISNULL(i.referencia, '') AS referencia, "
                 "  ISNULL(SUM(m.metros), 0) AS metros_actuales "
                 "FROM Rollo r WITH(NOLOCK) "
                 "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
                 "JOIN Almacen a WITH(NOLOCK) ON a.id = r.almacen_id "
+                "LEFT JOIN Ingreso i WITH(NOLOCK) ON i.id = r.ingreso_id "
                 "LEFT JOIN Movimiento m WITH(NOLOCK) ON m.id_rollo = r.id_rollo "
                 "WHERE p.codf = ? AND r.almacen_id = ? "
-                "GROUP BY r.id_rollo, a.nombre, r.ubicacion, r.estado, r.metros_inicial, p.codf, p.descripcion",
+                "GROUP BY r.id_rollo, a.nombre, r.ubicacion, r.estado, r.metros_inicial, p.codf, p.descripcion, i.referencia",
                 producto, almacen_id,
             )
         else:
             cursor.execute(
                 "SELECT r.id_rollo, a.nombre, r.ubicacion, r.estado, "
                 "  r.metros_inicial, p.codf, p.descripcion, "
+                "  ISNULL(i.referencia, '') AS referencia, "
                 "  ISNULL(SUM(m.metros), 0) AS metros_actuales "
                 "FROM Rollo r WITH(NOLOCK) "
                 "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
                 "JOIN Almacen a WITH(NOLOCK) ON a.id = r.almacen_id "
+                "LEFT JOIN Ingreso i WITH(NOLOCK) ON i.id = r.ingreso_id "
                 "LEFT JOIN Movimiento m WITH(NOLOCK) ON m.id_rollo = r.id_rollo "
                 "WHERE r.almacen_id = ? "
-                "GROUP BY r.id_rollo, a.nombre, r.ubicacion, r.estado, r.metros_inicial, p.codf, p.descripcion",
+                "GROUP BY r.id_rollo, a.nombre, r.ubicacion, r.estado, r.metros_inicial, p.codf, p.descripcion, i.referencia",
                 almacen_id,
             )
         rows = cursor.fetchall()
@@ -199,17 +203,25 @@ def rollos(almacen_id: int, producto: str = None):
 
     return [
         {
-            "id_rollo":       row[0],
-            "almacen":        row[1],
-            "ubicacion":      row[2],
-            "estado":         row[3],
-            "metros_inicial": float(row[4]),
-            "codf":           row[5],
-            "descripcion":    row[6],
-            "metros_actuales": float(row[7]),
+            "id_rollo":        row[0],
+            "almacen":         row[1],
+            "ubicacion":       row[2],
+            "estado":          row[3],
+            "metros_inicial":  float(row[4]),
+            "codf":            row[5],
+            "descripcion":     row[6],
+            "referencia":      row[7] or '',
+            "metros_actuales": float(row[8]),
         }
         for row in rows
     ]
+
+
+class ActualizarRolloRequest(BaseModel):
+    ubicacion:     Optional[str]   = None
+    referencia:    Optional[str]   = None
+    metros_inicial: Optional[float] = None
+    estado:        Optional[str]   = None
 
 
 class IngresoRequest(BaseModel):
@@ -506,6 +518,83 @@ def trasladar_rollo(body: TrasladoRequest):
         "almacen_origen": almacen_origen_nombre,
         "almacen_destino": almacen_destino_nombre,
         "usuario": body.usuario,
+    }
+
+
+@app.put("/rollos/{id_rollo}")
+def actualizar_rollo(id_rollo: str, body: ActualizarRolloRequest):
+    conn = connect_rollos()
+    conn.autocommit = False
+    try:
+        cursor = conn.cursor()
+
+        # Verificar existencia y detectar si tiene cortes
+        cursor.execute(
+            "SELECT r.metros_inicial, r.ingreso_id, "
+            "  CASE WHEN EXISTS ( "
+            "    SELECT 1 FROM Movimiento WHERE id_rollo = ? AND tipo = 'corte' "
+            "  ) THEN 1 ELSE 0 END AS tiene_cortes "
+            "FROM Rollo r WITH(UPDLOCK) WHERE r.id_rollo = ?",
+            id_rollo, id_rollo,
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Rollo '{id_rollo}' no encontrado")
+
+        ingreso_id   = row[1]
+        tiene_cortes = bool(row[2])
+
+        # Actualizar Rollo
+        rollo_sets   = []
+        rollo_params = []
+
+        if body.ubicacion is not None:
+            rollo_sets.append("ubicacion = ?")
+            rollo_params.append(body.ubicacion)
+
+        if body.estado is not None:
+            rollo_sets.append("estado = ?")
+            rollo_params.append(body.estado)
+
+        if body.metros_inicial is not None and not tiene_cortes:
+            rollo_sets.append("metros_inicial = ?")
+            rollo_params.append(body.metros_inicial)
+
+        if rollo_sets:
+            rollo_params.append(id_rollo)
+            cursor.execute(
+                f"UPDATE Rollo SET {', '.join(rollo_sets)} WHERE id_rollo = ?",
+                *rollo_params,
+            )
+
+        # Sincronizar movimiento de ingreso si se cambió metros_inicial
+        if body.metros_inicial is not None and not tiene_cortes:
+            cursor.execute(
+                "UPDATE Movimiento SET metros = ? WHERE id_rollo = ? AND tipo = 'ingreso'",
+                body.metros_inicial, id_rollo,
+            )
+
+        # Actualizar referencia en Ingreso
+        if body.referencia is not None and ingreso_id is not None:
+            cursor.execute(
+                "UPDATE Ingreso SET referencia = ? WHERE id = ?",
+                body.referencia, ingreso_id,
+            )
+
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al actualizar rollo: {e}")
+    finally:
+        conn.close()
+
+    return {
+        "id_rollo":               id_rollo,
+        "actualizado":            True,
+        "metros_inicial_ignorado": body.metros_inicial is not None and tiene_cortes,
     }
 
 
