@@ -160,37 +160,53 @@ def rollos_resumen(producto: str):
 
 
 @app.get("/rollos")
-def rollos(producto: str):
+def rollos(almacen_id: int, producto: str = None):
     conn = connect_rollos()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT r.id_rollo, a.nombre, r.ubicacion, r.estado, "
-            "  r.metros_inicial, "
-            "  ISNULL(SUM(m.metros), 0) AS metros_actuales "
-            "FROM Rollo r WITH(NOLOCK) "
-            "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
-            "JOIN Almacen a WITH(NOLOCK) ON a.id = r.almacen_id "
-            "LEFT JOIN Movimiento m WITH(NOLOCK) ON m.id_rollo = r.id_rollo "
-            "WHERE p.codf = ? "
-            "GROUP BY r.id_rollo, a.nombre, r.ubicacion, r.estado, r.metros_inicial",
-            producto,
-        )
+        if producto is not None:
+            cursor.execute(
+                "SELECT r.id_rollo, a.nombre, r.ubicacion, r.estado, "
+                "  r.metros_inicial, p.codf, p.descripcion, "
+                "  ISNULL(SUM(m.metros), 0) AS metros_actuales "
+                "FROM Rollo r WITH(NOLOCK) "
+                "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
+                "JOIN Almacen a WITH(NOLOCK) ON a.id = r.almacen_id "
+                "LEFT JOIN Movimiento m WITH(NOLOCK) ON m.id_rollo = r.id_rollo "
+                "WHERE p.codf = ? AND r.almacen_id = ? "
+                "GROUP BY r.id_rollo, a.nombre, r.ubicacion, r.estado, r.metros_inicial, p.codf, p.descripcion",
+                producto, almacen_id,
+            )
+        else:
+            cursor.execute(
+                "SELECT r.id_rollo, a.nombre, r.ubicacion, r.estado, "
+                "  r.metros_inicial, p.codf, p.descripcion, "
+                "  ISNULL(SUM(m.metros), 0) AS metros_actuales "
+                "FROM Rollo r WITH(NOLOCK) "
+                "JOIN Producto p WITH(NOLOCK) ON p.producto_id = r.producto_id "
+                "JOIN Almacen a WITH(NOLOCK) ON a.id = r.almacen_id "
+                "LEFT JOIN Movimiento m WITH(NOLOCK) ON m.id_rollo = r.id_rollo "
+                "WHERE r.almacen_id = ? "
+                "GROUP BY r.id_rollo, a.nombre, r.ubicacion, r.estado, r.metros_inicial, p.codf, p.descripcion",
+                almacen_id,
+            )
         rows = cursor.fetchall()
     finally:
         conn.close()
 
-    if not rows:
+    if producto is not None and not rows:
         raise HTTPException(status_code=404, detail=f"Producto '{producto}' no encontrado")
 
     return [
         {
-            "id_rollo": row[0],
-            "almacen": row[1],
-            "ubicacion": row[2],
-            "estado": row[3],
+            "id_rollo":       row[0],
+            "almacen":        row[1],
+            "ubicacion":      row[2],
+            "estado":         row[3],
             "metros_inicial": float(row[4]),
-            "metros_actuales": float(row[5]),
+            "codf":           row[5],
+            "descripcion":    row[6],
+            "metros_actuales": float(row[7]),
         }
         for row in rows
     ]
