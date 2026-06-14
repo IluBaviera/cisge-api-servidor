@@ -88,10 +88,40 @@ def get_stock_data() -> dict:
                         "almacenes": {},
                     }
                 products[key]["almacenes"][nombre] = float(row[4]) - float(row[9])
+
+        # Medidas estructuradas (campos personalizados Usr_001..004) — son
+        # intrínsecas al código, no a la marca/almacén. Se leen aparte de
+        # prd0101 (donde se llenan) para no arriesgar el loop de stock si las
+        # otras tablas de almacén no tuvieran esas columnas.
+        medidas_por_codigo = {}
+        cursor.execute(
+            "SELECT RTRIM(codf), RTRIM(Usr_001), RTRIM(Usr_002), "
+            "RTRIM(Usr_003), RTRIM(Usr_004) "
+            "FROM prd0101 WITH(NOLOCK) "
+            "WHERE LEFT(codi, 2) = '02' AND estado = 1"
+        )
+        for codf, m_mang, m_r1, m_r2, m_tubo in cursor.fetchall():
+            vals = {
+                "med_manguera": m_mang or "",
+                "med_rosca_1":  m_r1 or "",
+                "med_rosca_2":  m_r2 or "",
+                "med_tubo":     m_tubo or "",
+            }
+            # Quedarse con la primera fila que tenga algún dato (evita pisar
+            # con una fila vacía de otra marca del mismo código).
+            if codf not in medidas_por_codigo and any(vals.values()):
+                medidas_por_codigo[codf] = vals
     finally:
         conn.close()
 
     productos = list(products.values())
+
+    # Adjuntar las medidas a cada producto (mismas para todas las marcas del
+    # código). Si no hay datos cargados, se devuelven vacías para que el
+    # consumidor siempre encuentre las claves.
+    _SIN_MEDIDAS = {"med_manguera": "", "med_rosca_1": "", "med_rosca_2": "", "med_tubo": ""}
+    for p in productos:
+        p.update(medidas_por_codigo.get(p["codigo"], _SIN_MEDIDAS))
 
     return {
         "actualizado": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
