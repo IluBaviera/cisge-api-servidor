@@ -724,10 +724,9 @@ def documentos(almacen_id: int, fecha: str = None):
             "FROM mst01ped m WITH(NOLOCK) "
             "JOIN dtl01ped d WITH(NOLOCK) ON d.cdocu = m.cdocu AND d.ndocu = m.ndocu "
             "WHERE LEFT(d.codi, 2) = '02' "
-            "  AND d.codalm = ? "
             "  AND CAST(m.fecha AS DATE) = ? "
             "ORDER BY m.fecha DESC",
-            codalm, fecha,
+            fecha,
         )
         ped_rows = cursor.fetchall()
 
