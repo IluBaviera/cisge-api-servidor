@@ -780,6 +780,20 @@ def documentos(almacen_id: int, fecha: str = None):
     }
 
 
+@app.get("/debug/columnas-ped")
+def columnas_ped():
+    conn = connect_nava()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_NAME = 'mst01ped' ORDER BY ORDINAL_POSITION"
+        )
+        return {"columnas": [r[0] for r in cursor.fetchall()]}
+    finally:
+        conn.close()
+
+
 @app.get("/rollos/descuadre")
 def descuadre(almacen_id: int):
     conn_r = connect_rollos()
