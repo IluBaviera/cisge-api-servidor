@@ -720,11 +720,10 @@ def documentos(almacen_id: int, fecha: str = None):
 
         cursor.execute(
             "SELECT DISTINCT m.ndocu, m.fecha, m.codcli, m.nomcli, m.codven, "
-            "  d.codf, d.descr, d.pedi, d.cant, d.umed "
+            "  d.codf, d.descr, d.pedi, d.cant, d.umed, m.flag "
             "FROM mst01ped m WITH(NOLOCK) "
             "JOIN dtl01ped d WITH(NOLOCK) ON d.cdocu = m.cdocu AND d.ndocu = m.ndocu "
-            "WHERE m.flag = '0' "
-            "  AND LEFT(d.codi, 2) = '02' "
+            "WHERE LEFT(d.codi, 2) = '02' "
             "  AND d.codalm = ? "
             "  AND CAST(m.fecha AS DATE) = ? "
             "ORDER BY m.fecha DESC",
@@ -768,6 +767,7 @@ def documentos(almacen_id: int, fecha: str = None):
             "cant_pedida": float(r[7]),
             "cant_despachada": float(r[8]),
             "umed": r[9].strip(),
+            "flag": r[10],
         }
         for r in ped_rows
     ]
