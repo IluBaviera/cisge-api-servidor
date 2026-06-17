@@ -140,6 +140,22 @@ def stock():
     return get_stock_data()
 
 
+@app.get("/vendedores")
+def vendedores():
+    """Vendedores activos (whitelist del asistente). Tabla Vendedor en BdAsistente."""
+    conn = connect_asistente()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT RTRIM(numero_wa), RTRIM(nombre) "
+            "FROM Vendedor WITH(NOLOCK) WHERE activo = 1"
+        )
+        filas = cursor.fetchall()
+    finally:
+        conn.close()
+    return {"vendedores": [{"numero_wa": r[0], "nombre": r[1]} for r in filas]}
+
+
 @app.get("/marcas")
 def marcas():
     conn = connect_nava()
