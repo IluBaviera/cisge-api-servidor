@@ -24,8 +24,11 @@ Uso:
   python fill_medidas_piloto.py           # DRY-RUN (no escribe)
   python fill_medidas_piloto.py --apply   # aplica (pide confirmacion)
   python fill_medidas_piloto.py --prefijo 24791-   # otra familia (mismo patron XX-YY)
+  python fill_medidas_piloto.py --sufijos          # tolera variantes -04-04C, -08-06H67, -06-06PK(PROM)
+  python fill_medidas_piloto.py --sufijos --apply  # aplica incluyendo variantes con sufijo
 """
 import os
+import re
 import sys
 import datetime
 import pyodbc
@@ -50,13 +53,23 @@ def conectar():
     )
 
 
-def medidas_desde_codigo(codf):
+def medidas_desde_codigo(codf, sufijos=False):
     """'26791-04-03' -> (med_rosca_1, med_manguera) = ('1/4','3/16').
-    Devuelve None si el codigo no es exactamente PREFIJO-NN-NN con NN nominales."""
+    Devuelve None si el codigo no mapea limpio.
+    Con sufijos=True tolera variantes tipo '26791-08-06H67' / '-04-04C' /
+    '-06-06PK(PROM)': toma los digitos INICIALES de cada segmento (el nominal),
+    ignorando el sufijo de variante (no cambia la medida, es marca de material/
+    promo/empaque)."""
     parts = codf.split("-")
     if len(parts) != 3:
         return None
     seg_rosca, seg_mang = parts[1].strip(), parts[2].strip()
+    if sufijos:
+        mr = re.match(r'^(\d+)', seg_rosca)
+        mm = re.match(r'^(\d+)', seg_mang)
+        if not (mr and mm):
+            return None
+        seg_rosca, seg_mang = mr.group(1), mm.group(1)
     if seg_rosca not in MEDIDA_NOMINAL or seg_mang not in MEDIDA_NOMINAL:
         return None
     return MEDIDA_NOMINAL[seg_rosca], MEDIDA_NOMINAL[seg_mang]
@@ -64,6 +77,7 @@ def medidas_desde_codigo(codf):
 
 def main():
     aplicar = "--apply" in sys.argv
+    sufijos = "--sufijos" in sys.argv   # tolerar variantes con sufijo (C/PK/PROM/...)
     prefijo = "26791-"
     if "--prefijo" in sys.argv:
         prefijo = sys.argv[sys.argv.index("--prefijo") + 1]
@@ -86,7 +100,7 @@ def main():
     EMPTY = "(Usr_{c} IS NULL OR LTRIM(RTRIM(Usr_{c}))='')"
 
     for codf in codfs:
-        m = medidas_desde_codigo(codf)
+        m = medidas_desde_codigo(codf, sufijos=sufijos)
         if not m:
             sin_mapeo.append(codf)
             continue
