@@ -722,9 +722,12 @@ def documentos(almacen_id: int, fecha: str = None):
 
         cursor.execute(
             "SELECT DISTINCT m.ndocu, m.fecha, m.codcli, m.nomcli, m.codven, "
-            "  d.codf, d.descr, d.pedi, d.cant, d.umed, m.flag, m.fecreg "
+            "  d.codf, d.descr, d.pedi, d.cant, d.umed, m.flag, m.fecreg, "
+            "  RTRIM(sbf.nomsub) "
             "FROM mst01ped m WITH(NOLOCK) "
             "JOIN dtl01ped d WITH(NOLOCK) ON d.cdocu = m.cdocu AND d.ndocu = m.ndocu "
+            "LEFT JOIN tbl01sbf sbf WITH(NOLOCK) "
+            "  ON LEFT(d.codi, 4) = LEFT(sbf.codsub, 2) + SUBSTRING(sbf.codsub, 4, 2) "
             "WHERE LEFT(d.codi, 2) = '02' "
             "  AND CAST(m.fecha AS DATE) = ? "
             "ORDER BY m.fecha DESC",
@@ -771,6 +774,7 @@ def documentos(almacen_id: int, fecha: str = None):
             "umed": r[9].strip(),
             "flag": r[10],
             "fecreg": str(r[11]) if r[11] is not None else None,
+            "subfamilia": r[12],
         }
         for r in ped_rows
     ]
