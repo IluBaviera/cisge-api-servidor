@@ -705,7 +705,9 @@ def documentos(almacen_id: int, fecha: str = None):
         cursor.execute(
             "SELECT DISTINCT m.ndocu, m.fecha, m.codcli, m.nomcli, m.codven, "
             "  d.codf, d.descr, d.cant, d.umed, m.fecreg, m.flag, "
-            "  RTRIM(sbf.nomsub), RTRIM(ven.nomven) "
+            "  RTRIM(sbf.nomsub), RTRIM(ven.nomven), "
+            "  (SELECT TOP 1 p.ndocu FROM mst01ped p WITH(NOLOCK) "
+            "   WHERE p.nrefe = m.ndocu AND p.crefe = m.cdocu) AS ndocu_pedido "
             "FROM mst01cot m WITH(NOLOCK) "
             "JOIN dtl01cot d WITH(NOLOCK) ON d.cdocu = m.cdocu AND d.ndocu = m.ndocu "
             "LEFT JOIN tbl01sbf sbf WITH(NOLOCK) "
@@ -749,6 +751,7 @@ def documentos(almacen_id: int, fecha: str = None):
             "flag": r[10],
             "subfamilia": r[11],
             "nomven": r[12],
+            "ndocu_pedido": r[13],
         }
         for r in cot_rows
     ]
@@ -779,19 +782,6 @@ def documentos(almacen_id: int, fecha: str = None):
         "pedidos": pedidos,
     }
 
-
-@app.get("/debug/columnas-ped")
-def columnas_ped():
-    conn = connect_nava()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
-            "WHERE TABLE_NAME = 'mst01ped' ORDER BY ORDINAL_POSITION"
-        )
-        return {"columnas": [r[0] for r in cursor.fetchall()]}
-    finally:
-        conn.close()
 
 
 @app.get("/rollos/descuadre")
