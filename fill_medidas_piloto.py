@@ -1,31 +1,37 @@
 """
 Llenado de medidas estructuradas (campos personalizados) en prd0101 (BdNava01).
 
-Familia por defecto: ESPIGA 90 HEMBRA JIC -> codigos '26791-XX-YY', donde
-  XX = medida de la rosca  -> Usr_002 (med_rosca_1)
-  YY = medida de la manguera -> Usr_001 (med_manguera)
+Deriva med_rosca_1 / med_rosca_2 / med_manguera / med_tubo del codigo, segun la
+CLASE DE MAPEO (--mapeo) apropiada para la familia:
+
+  espiga     (default): seg1 = rosca inch  -> Usr_002 (med_rosca_1)
+                        seg2 = manguera    -> Usr_001 (med_manguera)
+  adaptador            : seg1 = rosca_1 inch-> Usr_002
+                        seg2 = rosca_2 inch-> Usr_003 (med_rosca_2)
+  metrica              : seg1 = hilo metrico-> Usr_002 ("M22x1.5", con paso DIN)
+                        seg2 = manguera    -> Usr_001
+                        + tubo DIN del hilo-> Usr_004 (med_tubo)
 
 ================================  SEGURIDAD  ================================
 - DRY-RUN por defecto: sin --apply NO escribe absolutamente nada.
-- Solo toca Usr_001 y Usr_002. NUNCA Usr_003/Usr_004 ni otra columna.
-- Solo RELLENA celdas vacias (WHERE ... IS NULL OR ='' ). Es imposible que
-  pise un valor ya cargado: la condicion del UPDATE excluye celdas con datos.
-- Conflictos (valor existente != derivado del codigo) se REPORTAN; no se tocan.
+- Solo RELLENA celdas vacias (WHERE ... IS NULL OR ='' ): imposible pisar un
+  valor ya cargado.
+- Conflictos (valor existente != derivado) se REPORTAN; no se tocan.
 - Codigos que no mapean limpio (sufijos, espacios) se SALTAN y se reportan.
 - Con --apply: pide confirmacion escrita, corre en UNA transaccion (rollback
-  automatico ante cualquier error) y deja un archivo de reversa .sql.
+  automatico ante error) y deja un archivo de reversa .sql.
 - Alcance acotado por LIKE '<prefijo>%' y LEFT(codi,2)='02' AND estado=1.
 
-RECOMENDADO: correr FUERA de horario laboral y con un backup de BdNava01
-(o al menos export de las columnas Usr_001/Usr_002 de la familia) ya hecho.
+RECOMENDADO: correr FUERA de horario laboral, con backup de la familia hecho.
 
 Uso:
-  set DB_PASSWORD=...                      (y DB_USER=... si necesita escritura)
-  python fill_medidas_piloto.py           # DRY-RUN (no escribe)
-  python fill_medidas_piloto.py --apply   # aplica (pide confirmacion)
-  python fill_medidas_piloto.py --prefijo 24791-   # otra familia (mismo patron XX-YY)
-  python fill_medidas_piloto.py --sufijos          # tolera variantes -04-04C, -08-06H67, -06-06PK(PROM)
-  python fill_medidas_piloto.py --sufijos --apply  # aplica incluyendo variantes con sufijo
+  set DB_PASSWORD=...                       (y DB_USER=... si necesita escritura)
+  python fill_medidas_piloto.py                                  # espiga, 26791-, dry-run
+  python fill_medidas_piloto.py --prefijo 24791-                 # otra familia espiga
+  python fill_medidas_piloto.py --mapeo metrica --prefijo 20491T-   # metrica liviana 90
+  python fill_medidas_piloto.py --mapeo metrica --prefijo 20491-    # idem sin T
+  python fill_medidas_piloto.py --sufijos                        # tolera variantes -04-04C, etc.
+  ... agregar --apply para escribir (pide confirmacion).
 """
 import os
 import re
@@ -41,6 +47,22 @@ MEDIDA_NOMINAL = {
     "56": "3 1/2",
 }
 
+# DIN 2353 / ISO 8434-1 — hilo metrico -> paso y tubo (serie LIVIANA / L).
+# M20 y M24 son de la serie pesada (S); se incluyen por aparecer en el catalogo
+# CISGE bajo grupos "liviana" (posible inconsistencia) -> REVISAR en el reporte.
+PASO_METRICO = {
+    "12": "1.5", "14": "1.5", "16": "1.5", "18": "1.5", "20": "1.5", "22": "1.5",
+    "24": "1.5", "26": "1.5", "30": "2", "36": "2", "45": "2", "52": "2",
+}
+TUBO_LIVIANA = {
+    "12": "6", "14": "8", "16": "10", "18": "12", "20": "12", "22": "15",
+    "24": "16", "26": "18", "30": "22", "36": "28", "45": "35", "52": "42",
+}
+_METRICO_SERIE_S = {"20", "24"}   # se marcan para verificacion manual
+
+COL_NOMBRE = {"001": "med_manguera", "002": "med_rosca_1",
+              "003": "med_rosca_2", "004": "med_tubo"}
+
 
 def conectar():
     pwd = os.environ.get("DB_PASSWORD")
@@ -53,39 +75,60 @@ def conectar():
     )
 
 
-def medidas_desde_codigo(codf, sufijos=False):
-    """'26791-04-03' -> (med_rosca_1, med_manguera) = ('1/4','3/16').
-    Devuelve None si el codigo no mapea limpio.
-    Con sufijos=True tolera variantes tipo '26791-08-06H67' / '-04-04C' /
-    '-06-06PK(PROM)': toma los digitos INICIALES de cada segmento (el nominal),
-    ignorando el sufijo de variante (no cambia la medida, es marca de material/
-    promo/empaque)."""
+def _segmentos(codf, sufijos):
+    """Devuelve (s1, s2) o None. Con sufijos=True toma los digitos iniciales."""
     parts = codf.split("-")
     if len(parts) != 3:
         return None
-    seg_rosca, seg_mang = parts[1].strip(), parts[2].strip()
+    s1, s2 = parts[1].strip(), parts[2].strip()
     if sufijos:
-        mr = re.match(r'^(\d+)', seg_rosca)
-        mm = re.match(r'^(\d+)', seg_mang)
-        if not (mr and mm):
+        m1, m2 = re.match(r'^(\d+)', s1), re.match(r'^(\d+)', s2)
+        if not (m1 and m2):
             return None
-        seg_rosca, seg_mang = mr.group(1), mm.group(1)
-    if seg_rosca not in MEDIDA_NOMINAL or seg_mang not in MEDIDA_NOMINAL:
+        s1, s2 = m1.group(1), m2.group(1)
+    return s1, s2
+
+
+def valores_desde_codigo(codf, mapeo, sufijos=False):
+    """Devuelve dict {col: valor} (col en COL_NOMBRE) o None si no mapea limpio."""
+    seg = _segmentos(codf, sufijos)
+    if not seg:
         return None
-    return MEDIDA_NOMINAL[seg_rosca], MEDIDA_NOMINAL[seg_mang]
+    s1, s2 = seg
+
+    if mapeo == "espiga":
+        if s1 not in MEDIDA_NOMINAL or s2 not in MEDIDA_NOMINAL:
+            return None
+        return {"002": MEDIDA_NOMINAL[s1], "001": MEDIDA_NOMINAL[s2]}
+
+    if mapeo == "adaptador":
+        if s1 not in MEDIDA_NOMINAL or s2 not in MEDIDA_NOMINAL:
+            return None
+        return {"002": MEDIDA_NOMINAL[s1], "003": MEDIDA_NOMINAL[s2]}
+
+    if mapeo == "metrica":
+        if s1 not in PASO_METRICO or s2 not in MEDIDA_NOMINAL:
+            return None
+        vals = {"002": f"M{int(s1)}x{PASO_METRICO[s1]}", "001": MEDIDA_NOMINAL[s2]}
+        if s1 in TUBO_LIVIANA:
+            vals["004"] = TUBO_LIVIANA[s1]
+        return vals
+
+    sys.exit(f"ERROR: mapeo desconocido '{mapeo}' (usa espiga|adaptador|metrica)")
 
 
 def main():
     aplicar = "--apply" in sys.argv
-    sufijos = "--sufijos" in sys.argv   # tolerar variantes con sufijo (C/PK/PROM/...)
+    sufijos = "--sufijos" in sys.argv
+    mapeo = "espiga"
+    if "--mapeo" in sys.argv:
+        mapeo = sys.argv[sys.argv.index("--mapeo") + 1]
     prefijo = "26791-"
     if "--prefijo" in sys.argv:
         prefijo = sys.argv[sys.argv.index("--prefijo") + 1]
 
     conn = conectar()
     cur = conn.cursor()
-
-    # Codigos distintos de la familia
     cur.execute(
         "SELECT DISTINCT RTRIM(codf) FROM prd0101 WITH(NOLOCK) "
         "WHERE codf LIKE ? AND LEFT(codi,2)='02' AND estado=1",
@@ -93,75 +136,69 @@ def main():
     )
     codfs = sorted(r[0] for r in cur.fetchall())
 
-    a_llenar = []     # (codf, rosca1, mang, n_filas_manguera_vacias, n_filas_rosca_vacias)
+    EMPTY = "(Usr_{c} IS NULL OR LTRIM(RTRIM(Usr_{c}))='')"
+    a_llenar = []     # (codf, vals_dict, {col: (valor, n_vacias)})
     conflictos = []   # (codf, detalle)
     sin_mapeo = []    # codf
-
-    EMPTY = "(Usr_{c} IS NULL OR LTRIM(RTRIM(Usr_{c}))='')"
+    avisos = []       # (codf, aviso) p.ej. metrico serie S
 
     for codf in codfs:
-        m = medidas_desde_codigo(codf, sufijos=sufijos)
-        if not m:
+        vals = valores_desde_codigo(codf, mapeo, sufijos)
+        if not vals:
             sin_mapeo.append(codf)
             continue
-        rosca1, mang = m
 
-        # filas vacias por columna (las unicas que el UPDATE tocaria)
-        cur.execute(
-            f"SELECT COUNT(*) FROM prd0101 WITH(NOLOCK) WHERE codf=? AND LEFT(codi,2)='02' "
-            f"AND {EMPTY.format(c='001')}", codf)
-        n_mang = cur.fetchone()[0]
-        cur.execute(
-            f"SELECT COUNT(*) FROM prd0101 WITH(NOLOCK) WHERE codf=? AND LEFT(codi,2)='02' "
-            f"AND {EMPTY.format(c='002')}", codf)
-        n_rosca = cur.fetchone()[0]
+        # aviso metrico serie S (M20/M24 en familia liviana)
+        if mapeo == "metrica":
+            seg = _segmentos(codf, sufijos)
+            if seg and seg[0] in _METRICO_SERIE_S:
+                avisos.append((codf, f"M{int(seg[0])} es serie S (no L) — verificar tubo={vals.get('004','?')}"))
 
-        # conflictos: valor existente (no vacio) distinto del derivado
-        cur.execute(
-            "SELECT DISTINCT RTRIM(Usr_001) FROM prd0101 WITH(NOLOCK) WHERE codf=? AND LEFT(codi,2)='02' "
-            "AND Usr_001 IS NOT NULL AND LTRIM(RTRIM(Usr_001))<>'' AND RTRIM(Usr_001)<>?", codf, mang)
-        for (v,) in cur.fetchall():
-            conflictos.append((codf, f"med_manguera BD={v!r} vs codigo={mang!r}"))
-        cur.execute(
-            "SELECT DISTINCT RTRIM(Usr_002) FROM prd0101 WITH(NOLOCK) WHERE codf=? AND LEFT(codi,2)='02' "
-            "AND Usr_002 IS NOT NULL AND LTRIM(RTRIM(Usr_002))<>'' AND RTRIM(Usr_002)<>?", codf, rosca1)
-        for (v,) in cur.fetchall():
-            conflictos.append((codf, f"med_rosca_1 BD={v!r} vs codigo={rosca1!r}"))
-
-        if n_mang or n_rosca:
-            a_llenar.append((codf, rosca1, mang, n_mang, n_rosca))
+        cols_llenar = {}
+        for col, val in vals.items():
+            cur.execute(
+                f"SELECT COUNT(*) FROM prd0101 WITH(NOLOCK) WHERE codf=? AND LEFT(codi,2)='02' "
+                f"AND {EMPTY.format(c=col)}", codf)
+            n = cur.fetchone()[0]
+            cur.execute(
+                f"SELECT DISTINCT RTRIM(Usr_{col}) FROM prd0101 WITH(NOLOCK) WHERE codf=? "
+                f"AND LEFT(codi,2)='02' AND Usr_{col} IS NOT NULL "
+                f"AND LTRIM(RTRIM(Usr_{col}))<>'' AND RTRIM(Usr_{col})<>?", codf, val)
+            for (v,) in cur.fetchall():
+                conflictos.append((codf, f"{COL_NOMBRE[col]} BD={v!r} vs codigo={val!r}"))
+            if n:
+                cols_llenar[col] = (val, n)
+        if cols_llenar:
+            a_llenar.append((codf, vals, cols_llenar))
 
     # ---------------- Reporte ----------------
-    print("\n" + "!" * 70)
-    print("MAPEO ASUMIDO (patron ESPIGA):  segmento1 = ROSCA (Usr_002),")
-    print("                                segmento2 = MANGUERA (Usr_001).")
-    print("NO usar en ADAPTADORES (dos roscas) ni otras familias sin revisar")
-    print("el mapeo: ahi el segmento2 es rosca_2, NO manguera.")
-    print("!" * 70)
-    print(f"\nFamilia (prefijo): {prefijo!r}   codigos encontrados: {len(codfs)}")
-    print(f"A rellenar (tienen celdas vacias): {len(a_llenar)}")
-    print(f"Conflictos (valor existente != codigo, NO se tocan): {len(conflictos)}")
-    print(f"Sin mapeo (codigo no es NN-NN nominal, se saltan): {len(sin_mapeo)}\n")
+    print(f"\n=== MAPEO: {mapeo}  |  Familia (prefijo): {prefijo!r} ===")
+    print(f"codigos encontrados: {len(codfs)}")
+    print(f"a rellenar (con celdas vacias): {len(a_llenar)}")
+    print(f"conflictos (valor != codigo, NO se tocan): {len(conflictos)}")
+    print(f"sin mapeo (se saltan): {len(sin_mapeo)}\n")
 
-    print("  CODIGO            -> med_rosca_1 / med_manguera   (filas vacias r1/mang)")
-    for codf, rosca1, mang, n_mang, n_rosca in a_llenar:
-        print(f"  {codf:18} -> r1={rosca1:6} mang={mang:6}   (vacias: r1={n_rosca} mang={n_mang})")
+    for codf, vals, cols_llenar in a_llenar:
+        desc = ", ".join(f"{COL_NOMBRE[c]}={v}" for c, v in vals.items())
+        vac = ",".join(f"{COL_NOMBRE[c]}={n}" for c, (v, n) in cols_llenar.items())
+        print(f"  {codf:18} -> {desc:48} (vacias: {vac})")
 
+    if avisos:
+        print("\n  AVISOS (revisar):")
+        for codf, a in avisos:
+            print(f"    {codf:18} {a}")
     if conflictos:
-        print("\n  CONFLICTOS (revisar a mano, el script NO los toca):")
+        print("\n  CONFLICTOS (revisar a mano, NO se tocan):")
         for codf, det in conflictos:
             print(f"    {codf:18} {det}")
     if sin_mapeo:
-        print("\n  SIN MAPEO (se saltan):")
-        for codf in sin_mapeo:
-            print(f"    {codf}")
+        print(f"\n  SIN MAPEO ({len(sin_mapeo)}, se saltan): {', '.join(sin_mapeo[:40])}"
+              + (" ..." if len(sin_mapeo) > 40 else ""))
 
     if not aplicar:
         print("\n*** DRY-RUN: no se escribio nada. Revisa el reporte. ***")
-        print("*** Para aplicar: python fill_medidas_piloto.py --apply ***")
         conn.close()
         return
-
     if not a_llenar:
         print("\nNada que aplicar.")
         conn.close()
@@ -173,30 +210,22 @@ def main():
         conn.close()
         return
 
-    # Archivo de reversa: deja las columnas tocadas de nuevo vacias
     rb = f"rollback_medidas_{datetime.datetime.now():%Y%m%d_%H%M%S}.sql"
     with open(rb, "w", encoding="utf-8") as f:
-        f.write(f"-- Reversa del llenado piloto {prefijo} {datetime.datetime.now()}\n")
-        for codf, rosca1, mang, n_mang, n_rosca in a_llenar:
-            if n_mang:
-                f.write(f"UPDATE prd0101 SET Usr_001='' WHERE codf='{codf}' AND RTRIM(Usr_001)='{mang}';\n")
-            if n_rosca:
-                f.write(f"UPDATE prd0101 SET Usr_002='' WHERE codf='{codf}' AND RTRIM(Usr_002)='{rosca1}';\n")
+        f.write(f"-- Reversa llenado {mapeo} {prefijo} {datetime.datetime.now()}\n")
+        for codf, vals, cols_llenar in a_llenar:
+            for col, (val, n) in cols_llenar.items():
+                f.write(f"UPDATE prd0101 SET Usr_{col}='' WHERE codf='{codf}' "
+                        f"AND RTRIM(Usr_{col})='{val}';\n")
 
-    # Aplicar en UNA transaccion. El WHERE solo toca celdas vacias.
     w = conn.cursor()
     tocadas = 0
     try:
-        for codf, rosca1, mang, n_mang, n_rosca in a_llenar:
-            if n_mang:
+        for codf, vals, cols_llenar in a_llenar:
+            for col, (val, n) in cols_llenar.items():
                 w.execute(
-                    f"UPDATE prd0101 SET Usr_001=? WHERE codf=? AND LEFT(codi,2)='02' "
-                    f"AND {EMPTY.format(c='001')}", mang, codf)
-                tocadas += w.rowcount
-            if n_rosca:
-                w.execute(
-                    f"UPDATE prd0101 SET Usr_002=? WHERE codf=? AND LEFT(codi,2)='02' "
-                    f"AND {EMPTY.format(c='002')}", rosca1, codf)
+                    f"UPDATE prd0101 SET Usr_{col}=? WHERE codf=? AND LEFT(codi,2)='02' "
+                    f"AND {EMPTY.format(c=col)}", val, codf)
                 tocadas += w.rowcount
         conn.commit()
         print(f"\nOK. Transaccion confirmada. Filas actualizadas: {tocadas}")
