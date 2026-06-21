@@ -50,15 +50,21 @@ MEDIDA_NOMINAL = {
 # DIN 2353 / ISO 8434-1 — hilo metrico -> paso y tubo (serie LIVIANA / L).
 # M20 y M24 son de la serie pesada (S); se incluyen por aparecer en el catalogo
 # CISGE bajo grupos "liviana" (posible inconsistencia) -> REVISAR en el reporte.
-PASO_METRICO = {
+PASO_METRICO = {  # paso por tamaño de hilo (ambas series): <=M27 -> 1.5, >=M30 -> 2
     "12": "1.5", "14": "1.5", "16": "1.5", "18": "1.5", "20": "1.5", "22": "1.5",
-    "24": "1.5", "26": "1.5", "30": "2", "36": "2", "45": "2", "52": "2",
+    "24": "1.5", "26": "1.5", "27": "1.5", "30": "2", "36": "2", "42": "2",
+    "45": "2", "52": "2",
 }
+# DIN 2353 — hilo -> tubo (mm). Serie LIVIANA (L) y PESADA (S).
 TUBO_LIVIANA = {
     "12": "6", "14": "8", "16": "10", "18": "12", "20": "12", "22": "15",
-    "24": "16", "26": "18", "30": "22", "36": "28", "45": "35", "52": "42",
+    "24": "16", "26": "18", "27": "18", "30": "22", "36": "28", "45": "35", "52": "42",
 }
-_METRICO_SERIE_S = {"20", "24"}   # se marcan para verificacion manual
+TUBO_PESADA = {
+    "14": "6", "16": "8", "18": "10", "20": "12", "22": "14", "24": "16",
+    "30": "20", "36": "25", "42": "30", "52": "38",
+}
+_METRICO_SERIE_S = {"20", "24"}   # en familia liviana, son hilos S -> avisar
 
 COL_NOMBRE = {"001": "med_manguera", "002": "med_rosca_1",
               "003": "med_rosca_2", "004": "med_tubo"}
@@ -80,6 +86,10 @@ def _segmentos(codf, sufijos):
     parts = codf.split("-")
     if len(parts) != 3:
         return None
+    # 1er segmento debe ser solo dígitos (con T opcional): excluye variantes con
+    # letras como '20411PS' (pasador) → así un prefijo amplio no las arrastra.
+    if not re.match(r'^\d+T?$', parts[0].strip()):
+        return None
     s1, s2 = parts[1].strip(), parts[2].strip()
     if sufijos:
         m1, m2 = re.match(r'^(\d+)', s1), re.match(r'^(\d+)', s2)
@@ -89,12 +99,15 @@ def _segmentos(codf, sufijos):
     return s1, s2
 
 
-def valores_desde_codigo(codf, mapeo, sufijos=False):
-    """Devuelve dict {col: valor} (col en COL_NOMBRE) o None si no mapea limpio."""
+def valores_desde_codigo(codf, mapeo, sufijos=False, descr=""):
+    """Devuelve dict {col: valor} (col en COL_NOMBRE) o None si no mapea limpio.
+    Para métricas usa la descripción como guarda de serie (LIVIANA vs PESADA)
+    para no contaminar entre series cuando un prefijo trae códigos mezclados."""
     seg = _segmentos(codf, sufijos)
     if not seg:
         return None
     s1, s2 = seg
+    du = (descr or "").upper()
 
     if mapeo == "espiga":
         if s1 not in MEDIDA_NOMINAL or s2 not in MEDIDA_NOMINAL:
@@ -106,15 +119,21 @@ def valores_desde_codigo(codf, mapeo, sufijos=False):
             return None
         return {"002": MEDIDA_NOMINAL[s1], "003": MEDIDA_NOMINAL[s2]}
 
-    if mapeo == "metrica":
+    if mapeo in ("metrica", "metrica_pesada"):
         if s1 not in PASO_METRICO or s2 not in MEDIDA_NOMINAL:
             return None
+        # guarda de serie: el mapeo debe coincidir con la descripción
+        if mapeo == "metrica" and "PESADA" in du:
+            return None
+        if mapeo == "metrica_pesada" and "LIVIANA" in du:
+            return None
+        tabla = TUBO_PESADA if mapeo == "metrica_pesada" else TUBO_LIVIANA
         vals = {"002": f"M{int(s1)}x{PASO_METRICO[s1]}", "001": MEDIDA_NOMINAL[s2]}
-        if s1 in TUBO_LIVIANA:
-            vals["004"] = TUBO_LIVIANA[s1]
+        if s1 in tabla:
+            vals["004"] = tabla[s1]
         return vals
 
-    sys.exit(f"ERROR: mapeo desconocido '{mapeo}' (usa espiga|adaptador|metrica)")
+    sys.exit(f"ERROR: mapeo desconocido '{mapeo}' (usa espiga|adaptador|metrica|metrica_pesada)")
 
 
 def main():
@@ -130,11 +149,13 @@ def main():
     conn = conectar()
     cur = conn.cursor()
     cur.execute(
-        "SELECT DISTINCT RTRIM(codf) FROM prd0101 WITH(NOLOCK) "
-        "WHERE codf LIKE ? AND LEFT(codi,2)='02' AND estado=1",
+        "SELECT RTRIM(codf), MAX(RTRIM(descr)) FROM prd0101 WITH(NOLOCK) "
+        "WHERE codf LIKE ? AND LEFT(codi,2)='02' AND estado=1 "
+        "GROUP BY RTRIM(codf)",
         prefijo + "%",
     )
-    codfs = sorted(r[0] for r in cur.fetchall())
+    descr_por_codf = {r[0]: (r[1] or "") for r in cur.fetchall()}
+    codfs = sorted(descr_por_codf)
 
     EMPTY = "(Usr_{c} IS NULL OR LTRIM(RTRIM(Usr_{c}))='')"
     a_llenar = []     # (codf, vals_dict, {col: (valor, n_vacias)})
@@ -143,7 +164,7 @@ def main():
     avisos = []       # (codf, aviso) p.ej. metrico serie S
 
     for codf in codfs:
-        vals = valores_desde_codigo(codf, mapeo, sufijos)
+        vals = valores_desde_codigo(codf, mapeo, sufijos, descr_por_codf[codf])
         if not vals:
             sin_mapeo.append(codf)
             continue
